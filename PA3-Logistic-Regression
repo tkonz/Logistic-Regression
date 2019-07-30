@@ -1,0 +1,275 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Apr  9 09:53:05 2019
+
+@author: Tish
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+from sklearn.decomposition import PCA
+from sklearn.model_selection import train_test_split, KFold
+from sklearn.utils import compute_class_weight
+from sklearn.decomposition import PCA
+from sklearn.model_selection import train_test_split, KFold
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.metrics import confusion_matrix, classification_report, roc_auc_score, roc_curve, auc
+
+class Logistic_Regression():
+    
+    def fit(self, xtrain, ytrain, weights, learning_rate, num_iters, batch_size):
+        self.xtrain = xtrain
+        self.ytrain = ytrain
+        self.learning_rate = learning_rate
+        self.num_iters = num_iters
+        self.batch_size = batch_size
+        self.weights = weights
+        self.w = np.random.rand(self.xtrain.shape[0], self.xtrain.shape[1])*0.001
+        self.b = np.ones((self.xtrain.shape[0], 1))
+        self.mini_batches = []
+        self.x_batch = []
+        self.y_batch = []
+        self.s = []
+        self.class_weights = []
+
+    def sigmoid(self, z):
+        return 1.0 / (1.0 + np.exp(-z)) 
+    
+    def get_loss(self):        
+        x = self.y_batch * np.log(self.s) + (1-np.expand_dims(self.y_batch, axis=1)) * np.log(1-np.expand_dims(self.s, axis=1))
+        self.loss = -np.mean(x)
+        
+    def get_minibatch(self):
+        assert self.xtrain.shape[0] == self.ytrain.shape[0]
+        self.params = []
+        data = np.hstack((self.xtrain,self.ytrain))    
+        np.random.shuffle(data)   
+        num_batches = data.shape[0] // self.batch_size
+        for i in range(0, num_batches):
+            mini_batch = data[i*self.batch_size:(i+1)*self.batch_size,:]
+            self.x_batch = mini_batch[:, :-1]
+            self.y_batch = mini_batch[:,-1].reshape((-1,1))
+            w_batch = self.w[i*self.batch_size:(i+1)*self.batch_size,:]
+            b_batch = self.b[i*self.batch_size:(i+1)*self.batch_size,:]
+            self.mini_batches.append((self.x_batch,self.y_batch))
+            self.params.append((w_batch,b_batch))
+        if data.shape[0] % self.batch_size != 0:
+            mini_batch = data[i*self.batch_size:data.shape[0]]
+            self.x_batch = mini_batch[:, :-1]
+            self.y_batch = mini_batch[:, -1].reshape((-1,1))
+            w_batch = self.w[i*self.batch_size:data.shape[0]]
+            b_batch = self.b[i*self.batch_size:data.shape[0]]
+            self.mini_batches.append((self.x_batch,self.y_batch))
+            self.params.append((w_batch,b_batch))
+    
+    def batchGD(self):
+        w_avg = []
+        b_avg = []
+        wsum = []
+        for i in range(self.num_iters):
+            if i != 0:
+                self.w = np.vstack(w_avg)
+                self.b = np.vstack(b_avg)
+                assert(self.xtrain.shape[0] == self.w.shape[0])
+                assert(self.xtrain.shape[0] == self.b.shape[0])
+                w_avg = []
+                b_avg = []
+            self.mini_batches = []
+            self.get_minibatch()
+            #print(len(self.mini_batches))
+            for j in range(len(self.mini_batches)):
+                #print(j)
+                self.x_batch, self.y_batch = self.mini_batches[j]
+                self.w, self.b = self.params[j]
+                wsum = np.matmul(self.x_batch, np.transpose(self.w)) + self.b
+                self.s = self.sigmoid(np.diagonal(wsum))
+                grad_z = np.subtract(self.s, self.y_batch)
+                grad_w = 1/self.batch_size * np.matmul(grad_z, self.x_batch)
+                grad_b = 1/self.batch_size * np.sum(grad_z, axis=1, keepdims=True)
+                self.w = self.w - self.learning_rate * grad_w
+                self.b = self.b - self.learning_rate * grad_b
+                w_avg.append(self.w)
+                b_avg.append(self.b)
+            self.get_loss()    
+            print("Iteration ", i, ": ", self.loss)
+        self.w = np.vstack(w_avg)
+        self.b = np.vstack(b_avg)
+    
+    def train(self):
+        print(self.xtrain.shape[0])
+        print(self.ytrain.shape[0])
+        if self.weights:
+            self.get_class_weights()
+            self.batchGD_weighted()
+        else:
+            self.batchGD()
+    
+    def batchGD_weighted(self):
+        w_avg = []
+        b_avg = []
+        wsum = []
+        for i in range(self.num_iters):
+            if i != 0:
+                self.w = np.vstack(w_avg)
+                self.b = np.vstack(b_avg)
+                assert(self.xtrain.shape[0] == self.w.shape[0])
+                assert(self.xtrain.shape[0] == self.b.shape[0])
+                w_avg = []
+                b_avg = []
+            self.get_minibatch()
+            for j in range(len(self.mini_batches)):
+                self.x_batch, self.y_batch = self.mini_batches[j]            
+                self.w, self.b = self.params[j]
+                wsum = np.matmul(self.x_batch, np.transpose(self.w)) + self.b
+                self.s = self.sigmoid(np.diagonal(wsum))
+                w_1 = np.argwhere(self.y_batch == 1)            
+                grad_z = np.subtract(self.s, self.y_batch)
+                grad_w = 1/self.batch_size * np.matmul(grad_z, self.x_batch)           
+    
+                for row in range(grad_w.shape[0]):
+                    if row == np.any(w_1):
+                        row = row*self.class_weights[1]
+                    else:
+                        row = row*self.class_weights[0]    
+                grad_b = 1/self.batch_size * np.sum(grad_z, axis=1, keepdims=True)
+                self.w = self.w - self.learning_rate * grad_w
+                self.b = self.b - self.learning_rate * grad_b
+                w_avg.append(self.w)
+                b_avg.append(self.b)
+            self.get_loss()
+            print("Iteration ", i, ": ", self.loss)
+        self. w = np.vstack(w_avg)
+        self.b = np.vstack(b_avg)
+
+    def get_class_weights(self):
+        y_label = tuple(np.unique(self.ytrain[:18000]))
+        trY_ = np.squeeze(self.ytrain[:18000])
+        self.class_weights = compute_class_weight('balanced', y_label, trY_)
+        print(self.class_weights)
+
+    def predict(self, xtest):
+        self.xtest = xtest
+        self.train()
+        wsum = np.matmul(self.xtest, np.transpose(self.w)) + self.b
+        self.scores = self.sigmoid(np.diagonal(wsum))
+
+        self.preds = []
+        for val in self.scores:
+            if val > 0.5:
+                self.preds.append(1)
+            else:
+                self.preds.append(0)
+        return self.preds
+
+    def get_results(self, ylabel, size=18000):
+        self.ylabel = ylabel
+        conf = confusion_matrix(self.ylabel[:size], self.preds)
+        plt.figure(0).clf()
+        plt.imshow(conf)
+        print(classification_report(self.ylabel[:size], self.preds))
+        fpr, tpr, _ = roc_curve(self.ylabel, 1-self.scores)
+        auc = roc_auc_score(self.ylabel, self.preds)
+        plt.figure(1).clf()
+        plt.plot(fpr, tpr, label='Logistic Regression (area = %0.2f)' % auc)
+        plt.plot([0, 1], [0, 1],'r--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Receiver operating characteristic')
+        plt.legend(loc="lower right")
+        plt.savefig('Log_ROC')
+        plt.show()
+
+
+def main(csvX, csvY, kFold=False, weights=True): 
+    dfA = pd.read_csv(csvX)
+    dfy = pd.read_csv(csvY)
+    dfA = dfA[1:]
+       
+    names = dfA.columns 
+    if 'domain1' in names:
+        dfA = dfA.drop(columns=['domain1'])
+        dfA = dfA.drop(columns=['state1'])
+    else:
+        dfA = dfA.drop(columns=['state1'])
+        dfA = dfA.drop(columns=['custAttr2'])
+ 
+    dfA = pd.get_dummies(dfA)
+    
+    X = np.array(dfA)
+    y = np.array(dfy)
+    pca = PCA(n_components=17)
+    pca_vals = pca.fit_transform(X)
+    V = pca.components_
+    pca_X = np.matmul(X, V[:6, :].T)   
+    scaler = StandardScaler()        
+    pca_X = scaler.fit_transform(pca_X)
+
+    mask = np.random.rand(len(X)) < 0.8
+    
+    idx = np.random.permutation(list(range(X.shape[0])))
+    if pca:
+        pca_X = pca_X[idx, :]
+        y = y[idx]
+        trX = pca_X[mask]
+        testX = pca_X[~mask]
+        trY = y[mask]
+        testY = y[~mask] 
+    else:
+        X = X[idx, :]
+        y = y[idx]
+        trX = X[mask]
+        testX = X[~mask]
+        trY = y[mask]
+        testY = y[~mask] 
+
+    ###### 1.1 ######
+    if kFold:
+        ### train set ###
+        size = 3000
+        idx = np.random.permutation(list(range(X.shape[0])))
+        if pca:
+            pca_X = pca_X[idx, :]
+            y = y[idx]
+            pca_X = pca_X[:30000,:]
+            y = y[:30000,:]
+        else:
+            X = X[idx, :]
+            y = y[idx]
+            X = X[:30000, :]
+            y = y[:30000, :]
+        for i in range(9):
+            classifier = Logistic_Regression()
+            l1 = pca_X[-size:,:]
+            l2 = pca_X[:-size,:]
+            pca_X = np.vstack((l1,l2)) 
+            testX = pca_X[-size:,:]
+            testY = y[-size:,:]
+            trainX = pca_X[:-size,:]
+            trainY = y[:-size,:]
+            for i in range(9):
+                classifier.fit(trainX[i*size:(i+1)*size,:], trainY[i*size:(i+1)*size,:], learning_rate=0.3, num_iters=50, batch_size=1000, weights=False)
+            predictions = classifier.predict(testX)
+            classifier.get_results(testY)
+            plt.clf()
+            plt.cla()
+            plt.close()
+            
+    ###### 1.2 ######
+    classifier = Logistic_Regression()
+    classifier.fit(trX[:19000,:], trY[:19000,:], learning_rate=0.3, num_iters=2, batch_size=1000, weights=True)
+    _ = classifier.predict(trX[:19000,:])
+    classifier.get_results(trY[:19000,:], 19000)
+    
+    ###### 1.3 ######
+    _ = classifier.predict(testX[:19000,:])
+    classifier.get_results(testY[:19000,:], 19000)
+    
+if __name__ == '__main__':
+    plt.ion()
+    main(os.path.join(os.getcwd(), "Set-A.X.csv"), os.path.join(os.getcwd(), "Set-A.y.csv"),kFold=False, weights=True)
+        
